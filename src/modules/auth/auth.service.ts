@@ -27,6 +27,7 @@ import {
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
+
   private readonly SALT_ROUNDS = 12;
   private readonly OTP_EXPIRY_MINUTES = 5;
   private readonly REFRESH_TOKEN_TTL_DAYS = 30;
@@ -310,18 +311,25 @@ export class AuthService {
     email: string,
     code: string,
   ): Promise<void> {
+
     const transporter = nodemailer.createTransport({
-      service: 'gmail',
+      host: process.env.EMAIL_HOST,
+      port: Number(process.env.EMAIL_PORT),
+      secure: process.env.EMAIL_SECURE === 'true',
+
       auth: {
-        user: process.env.MAIL_USER,
-        pass: process.env.MAIL_PASS,
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS,
       },
     });
 
     await transporter.sendMail({
-      from: `"UniGuide AI" <${process.env.MAIL_USER}>`,
+      from: `"UniGuide AI" <${process.env.EMAIL_USER}>`,
+
       to: email,
+
       subject: 'UniGuide OTP Verification',
+
       html: `
         <div style="font-family: Arial; padding:20px;">
           <h2>UniGuide AI Verification</h2>
