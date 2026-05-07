@@ -308,49 +308,55 @@ export class AuthService {
   // SEND EMAIL
 
   private async sendOtpEmail(
-    email: string,
-    code: string,
-  ): Promise<void> {
+  email: string,
+  code: string,
+): Promise<void> {
 
-    const transporter = nodemailer.createTransport({
-      host: process.env.EMAIL_HOST,
-      port: Number(process.env.EMAIL_PORT),
-      secure: process.env.EMAIL_SECURE === 'true',
+  const transporter = nodemailer.createTransport({
+    host: process.env.EMAIL_HOST,
 
-      auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS,
-      },
-    });
+    port: Number(process.env.EMAIL_PORT),
 
-    await transporter.sendMail({
-      from: `"UniGuide AI" <${process.env.EMAIL_USER}>`,
+    secure: false,
 
-      to: email,
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASS,
+    },
 
-      subject: 'UniGuide OTP Verification',
+    tls: {
+      rejectUnauthorized: false,
+    },
+  });
 
-      html: `
-        <div style="font-family: Arial; padding:20px;">
-          <h2>UniGuide AI Verification</h2>
+  await transporter.sendMail({
+    from: `"UniGuide AI" <${process.env.EMAIL_USER}>`,
 
-          <p>Your OTP code is:</p>
+    to: email,
 
-          <div style="
-            font-size:32px;
-            font-weight:bold;
-            letter-spacing:5px;
-            color:#2563eb;
-            margin:20px 0;
-          ">
-            ${code}
-          </div>
+    subject: 'UniGuide OTP Verification',
 
-          <p>This code expires in 5 minutes.</p>
+    html: `
+      <div style="font-family: Arial; padding:20px;">
+        <h2>UniGuide AI Verification</h2>
+
+        <p>Your OTP code is:</p>
+
+        <div style="
+          font-size:32px;
+          font-weight:bold;
+          letter-spacing:5px;
+          color:#2563eb;
+          margin:20px 0;
+        ">
+          ${code}
         </div>
-      `,
-    });
-  }
+
+        <p>This code expires in 5 minutes.</p>
+      </div>
+    `,
+  });
+}
 
   // GENERATE OTP
 
