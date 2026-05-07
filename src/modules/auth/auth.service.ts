@@ -80,7 +80,7 @@ export class AuthService {
     await this.generateAndSendOtp(dto.email);
 
     return {
-      message: `OTP sent to email`,
+      message: 'OTP sent to email',
       userId: saved.id,
     };
   }
@@ -149,7 +149,7 @@ export class AuthService {
     await this.generateAndSendOtp(dto.email);
 
     return {
-      message: `OTP sent successfully`,
+      message: 'OTP sent successfully',
     };
   }
 
@@ -308,61 +308,74 @@ export class AuthService {
   // SEND EMAIL
 
   private async sendOtpEmail(
-  email: string,
-  code: string,
-): Promise<void> {
+    email: string,
+    code: string,
+  ): Promise<void> {
 
-  const transporter = nodemailer.createTransport({
-    host: process.env.EMAIL_HOST,
+    const transporter = nodemailer.createTransport({
+      host: process.env.EMAIL_HOST,
 
-    port: Number(process.env.EMAIL_PORT),
+      port: Number(process.env.EMAIL_PORT) || 587,
 
-    secure: false,
+      secure: false,
 
-    auth: {
-      user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASS,
-    },
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS,
+      },
 
-    tls: {
-      rejectUnauthorized: false,
-    },
-  });
+      tls: {
+        rejectUnauthorized: false,
+      },
 
-  await transporter.sendMail({
-    from: `"UniGuide AI" <${process.env.EMAIL_USER}>`,
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 10000,
+    });
 
-    to: email,
+    await transporter.verify();
 
-    subject: 'UniGuide OTP Verification',
+    await transporter.sendMail({
+      from:
+        process.env.EMAIL_FROM ||
+        `"UniGuide AI" <${process.env.EMAIL_USER}>`,
 
-    html: `
-      <div style="font-family: Arial; padding:20px;">
-        <h2>UniGuide AI Verification</h2>
+      to: email,
 
-        <p>Your OTP code is:</p>
+      subject: 'UniGuide OTP Verification',
 
-        <div style="
-          font-size:32px;
-          font-weight:bold;
-          letter-spacing:5px;
-          color:#2563eb;
-          margin:20px 0;
-        ">
-          ${code}
+      html: `
+        <div style="font-family: Arial; padding:20px;">
+          <h2>UniGuide AI Verification</h2>
+
+          <p>Your OTP code is:</p>
+
+          <div style="
+            font-size:32px;
+            font-weight:bold;
+            letter-spacing:5px;
+            color:#2563eb;
+            margin:20px 0;
+          ">
+            ${code}
+          </div>
+
+          <p>This code expires in 5 minutes.</p>
         </div>
+      `,
+    });
 
-        <p>This code expires in 5 minutes.</p>
-      </div>
-    `,
-  });
-}
+    this.logger.log(
+      `OTP Email sent successfully to ${email}`,
+    );
+  }
 
   // GENERATE OTP
 
   private async generateAndSendOtp(
     email: string,
   ): Promise<void> {
+
     await this.otpRepository
       .createQueryBuilder()
       .update(Otp)
@@ -405,6 +418,7 @@ export class AuthService {
   private async issueTokens(
     user: User,
   ): Promise<AuthTokenDto> {
+
     const payload: JwtPayload = {
       sub: user.id,
       phone: user.email,
@@ -434,7 +448,7 @@ export class AuthService {
 
     expiresAt.setDate(
       expiresAt.getDate() +
-        this.REFRESH_TOKEN_TTL_DAYS,
+      this.REFRESH_TOKEN_TTL_DAYS,
     );
 
     await this.userRepository
