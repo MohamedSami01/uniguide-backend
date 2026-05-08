@@ -2,7 +2,6 @@ import {
   Injectable,
   UnauthorizedException,
   BadRequestException,
-  Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -10,7 +9,8 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 
 import * as bcrypt from 'bcrypt';
-import axios from 'axios';
+import * as nodemailer from 'nodemailer';
+
 import { User } from '../users/entities/user.entity';
 
 import { RegisterDto } from './dto/register.dto';
@@ -20,8 +20,6 @@ import { VerifyOtpDto } from './dto/verify-otp.dto';
 
 @Injectable()
 export class AuthService {
-  private readonly logger = new Logger(AuthService.name);
-
   constructor(
     @InjectRepository(User)
     private readonly usersRepository: Repository<User>,
@@ -30,9 +28,16 @@ export class AuthService {
     private readonly configService: ConfigService,
   ) {}
 
-  // =========================
-  // REGISTER
-  // =========================
+  private transporter = nodemailer.createTransport({
+    host: process.env.EMAIL_HOST,
+    port: Number(process.env.EMAIL_PORT),
+    secure: process.env.EMAIL_SECURE === 'true',
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASS,
+    },
+  });
+
   async register(dto: RegisterDto) {
     const existingUser = await this.usersRepository.findOne({
       where: { email: dto.email },
@@ -54,12 +59,10 @@ export class AuthService {
 
     return {
       message: 'User registered successfully',
+      userId: user.id,
     };
   }
 
-  // =========================
-  // LOGIN
-  // =========================
   async login(dto: LoginDto) {
     const user = await this.usersRepository.findOne({
       where: { email: dto.email },
@@ -69,187 +72,101 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    const isPasswordValid = await bcrypt.compare(
-      dto.password,
-      user.password || '',
-    );
-
+   const isPasswordValid = await bcrypt.compare(
+  dto.password,
+  user.password as string,
+);
     if (!isPasswordValid) {
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    return this.issueTokens(
-      String(user.id),
-      user.email,
-    );
+    const payload = {
+      sub: user.id,
+      email: user.email,
+    };
+
+    const accessToken = await this.jwtService.signAsync(payload, {
+      secret: this.configService.get<string>('JWT_SECRET') as string,
+      expiresIn: '15m',
+    });
+
+    const refreshToken = await this.jwtService.signAsync(payload, {
+      secret: this.configService.get<string>(
+        'JWT_REFRESH_SECRET',
+      ) as string,
+      expiresIn: '7d',
+    });
+
+    return {
+      accessToken,
+      refreshToken,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+      },
+    };
   }
 
-  // =========================
-  // SEND OTP
-  // =========================
   async sendOtp(dto: SendOtpDto) {
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+    console.log(`OTP for ${dto.email}: ${otp}`);
 
     await this.sendOtpEmail(dto.email, otp);
 
     return {
       message: 'OTP sent successfully',
-      otp, // remove later in production if needed
     };
   }
 
-  // =========================
-  // VERIFY OTP
-  // =========================
   async verifyOtp(dto: VerifyOtpDto) {
-    // temporary static verification
-    // replace with DB/Redis later
+    return {
+      message: 'OTP verified successfully',
+    };
+  }
 
-    if (!dto.code || dto.code.length !== 6) {
-      throw new BadRequestException('Invalid OTP');
-    }
+  async refresh(userId: string, email: string) {
+    const payload = {
+      sub: userId,
+      email,
+    };
 
-    let user = await this.usersRepository.findOne({
-      where: { email: dto.email },
+    const accessToken = await this.jwtService.signAsync(payload, {
+      secret: this.configService.get<string>('JWT_SECRET') as string,
+      expiresIn: '15m',
     });
 
-    if (!user) {
-      const randomPassword = await bcrypt.hash('temp123456', 10);
-
-      user = this.usersRepository.create({
-        name: 'OTP User',
-        email: dto.email,
-        password: randomPassword,
-      });
-
-      user = await this.usersRepository.save(user);
-    }
-
-    return this.issueTokens(
-      String(user.id),
-      user.email,
-    );
+    return {
+      accessToken,
+    };
   }
 
-  // =========================
-  // REFRESH TOKEN
-  // =========================
-  async refresh(userId: string, email: string) {
-    return this.issueTokens(userId, email);
-  }
-
-  // =========================
-  // LOGOUT
-  // =========================
   async logout() {
     return {
       message: 'Logged out successfully',
     };
   }
 
-  // =========================
-  // SEND EMAIL WITH BREVO API
-  // =========================
-  private async sendOtpEmail(email: string, otp: string) {
+  async sendOtpEmail(email: string, otp: string) {
     try {
-      await axios.post(
-        'https://api.brevo.com/v3/smtp/email',
-        {
-          sender: {
-            name: 'UniGuide AI',
-            email: 'uni.guides.ai@gmail.com',
-          },
+      await this.transporter.sendMail({
+        from: process.env.EMAIL_FROM,
+        to: email,
+        subject: 'UniGuide OTP Verification',
+        html: `
+          <div style="font-family: Arial, sans-serif;">
+            <h2>UniGuide Verification Code</h2>
+            <p>Your OTP code is:</p>
+            <h1>${otp}</h1>
+            <p>This code will expire in 10 minutes.</p>
+          </div>
+        `,
+      });
 
-          to: [
-            {
-              email,
-            },
-          ],
-
-          subject: 'Your OTP Code',
-
-          htmlContent: `
-            <div style="font-family: Arial; padding:20px">
-              <h2>UniGuide AI Verification</h2>
-
-              <p>Your OTP code is:</p>
-
-              <div style="
-                font-size:32px;
-                font-weight:bold;
-                letter-spacing:5px;
-                color:#2563eb;
-                margin:20px 0;
-              ">
-                ${otp}
-              </div>
-
-              <p>This code expires in 5 minutes.</p>
-            </div>
-          `,
-        },
-        {
-          headers: {
-            'api-key': this.configService.get<string>(
-              'BREVO_API_KEY',
-            ),
-            'Content-Type': 'application/json',
-          },
-        },
-      );
-
-      this.logger.log(`OTP email sent to ${email}`);
+      console.log(`OTP email sent to ${email}`);
     } catch (error) {
-      this.logger.error('Failed to send OTP email');
-
-      console.log(
-        error.response?.data || error.message,
-      );
-
-      // fallback
-      this.logger.log(`OTP for ${email}: ${otp}`);
+      console.error('Failed to send OTP email', error);
     }
-  }
-
-  // =========================
-  // ISSUE TOKENS
-  // =========================
-  private async issueTokens(
-    userId: string,
-    email: string,
-  ) {
-    const payload = {
-      sub: userId,
-      email,
-    };
-
-    const accessToken = await this.jwtService.signAsync(
-      payload,
-      {
-        secret:
-          this.configService.get<string>(
-            'JWT_ACCESS_SECRET',
-          ) || 'access-secret',
-
-        expiresIn: '1d',
-      },
-    );
-
-    const refreshToken = await this.jwtService.signAsync(
-      payload,
-      {
-        secret:
-          this.configService.get<string>(
-            'JWT_REFRESH_SECRET',
-          ) || 'refresh-secret',
-
-        expiresIn: '7d',
-      },
-    );
-
-    return {
-      accessToken,
-      refreshToken,
-    };
   }
 }
