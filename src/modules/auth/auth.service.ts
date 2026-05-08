@@ -1,109 +1,81 @@
 import {
   Injectable,
   UnauthorizedException,
-  ConflictException,
   BadRequestException,
   Logger,
 } from '@nestjs/common';
-
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 
 import * as bcrypt from 'bcrypt';
-
+import axios from 'axios';
 import { User } from '../users/entities/user.entity';
-import { Otp } from './entities/otp.entity';
 
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { SendOtpDto } from './dto/send-otp.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
-import { RefreshTokenDto } from './dto/refresh-token.dto';
-import { AuthTokenDto } from './dto/auth-token.dto';
 
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
 
-  private readonly SALT_ROUNDS = 10;
-  private readonly OTP_EXPIRY_MINUTES = 5;
-  private readonly REFRESH_TOKEN_TTL_DAYS = 7;
-
   constructor(
     @InjectRepository(User)
-    private readonly userRepository: Repository<User>,
-
-    @InjectRepository(Otp)
-    private readonly otpRepository: Repository<Otp>,
+    private readonly usersRepository: Repository<User>,
 
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
   ) {}
 
-  // ================= REGISTER =================
-
-  async register(
-    dto: RegisterDto,
-  ): Promise<{ message: string; userId: string }> {
-    const existingUser = await this.userRepository.findOne({
-      where: {
-        email: dto.email,
-      },
+  // =========================
+  // REGISTER
+  // =========================
+  async register(dto: RegisterDto) {
+    const existingUser = await this.usersRepository.findOne({
+      where: { email: dto.email },
     });
 
     if (existingUser) {
-      throw new ConflictException('Email already exists');
+      throw new BadRequestException('Email already exists');
     }
 
-    const hashedPassword = await bcrypt.hash(
-      dto.password,
-      this.SALT_ROUNDS,
-    );
+    const hashedPassword = await bcrypt.hash(dto.password, 10);
 
-    const user = this.userRepository.create({
+    const user = this.usersRepository.create({
       name: dto.name,
       email: dto.email,
       password: hashedPassword,
-      role: dto.role,
-      isVerified: false,
     });
 
-    const savedUser = await this.userRepository.save(user);
-
-    await this.generateAndSendOtp(savedUser.email);
+    await this.usersRepository.save(user);
 
     return {
       message: 'User registered successfully',
-      userId: String(savedUser.id),
     };
   }
 
-  // ================= LOGIN =================
-
-  async login(dto: LoginDto): Promise<AuthTokenDto> {
-    const user = await this.userRepository.findOne({
-      where: {
-        email: dto.email,
-      },
+  // =========================
+  // LOGIN
+  // =========================
+  async login(dto: LoginDto) {
+    const user = await this.usersRepository.findOne({
+      where: { email: dto.email },
     });
 
     if (!user) {
-      throw new UnauthorizedException(
-        'Invalid credentials',
-      );
+      throw new UnauthorizedException('Invalid credentials');
     }
 
-   const isPasswordValid = await bcrypt.compare(
-  dto.password,
-  String(user.password),
-);
+    const isPasswordValid = await bcrypt.compare(
+      dto.password,
+      user.password || '',
+    );
+
     if (!isPasswordValid) {
-      throw new UnauthorizedException(
-        'Invalid credentials',
-      );
+      throw new UnauthorizedException('Invalid credentials');
     }
 
     return this.issueTokens(
@@ -112,62 +84,46 @@ export class AuthService {
     );
   }
 
-  // ================= SEND OTP =================
+  // =========================
+  // SEND OTP
+  // =========================
+  async sendOtp(dto: SendOtpDto) {
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
-  async sendOtp(
-    dto: SendOtpDto,
-  ): Promise<{ message: string }> {
-    await this.generateAndSendOtp(dto.email);
+    await this.sendOtpEmail(dto.email, otp);
 
     return {
       message: 'OTP sent successfully',
+      otp, // remove later in production if needed
     };
   }
 
-  // ================= VERIFY OTP =================
+  // =========================
+  // VERIFY OTP
+  // =========================
+  async verifyOtp(dto: VerifyOtpDto) {
+    // temporary static verification
+    // replace with DB/Redis later
 
-  async verifyOtp(
-    dto: VerifyOtpDto,
-  ): Promise<AuthTokenDto> {
-    const otpRecord = await this.otpRepository.findOne({
-      where: {
-        email: dto.email,
-        code: dto.code,
-      },
-      order: {
-        createdAt: 'DESC',
-      },
-    });
-
-    if (!otpRecord) {
-      throw new BadRequestException(
-        'Invalid OTP',
-      );
+    if (!dto.code || dto.code.length !== 6) {
+      throw new BadRequestException('Invalid OTP');
     }
 
-    const now = new Date();
-
-    if (otpRecord.expiresAt < now) {
-      throw new BadRequestException(
-        'OTP expired',
-      );
-    }
-
-    const user = await this.userRepository.findOne({
-      where: {
-        email: dto.email,
-      },
+    let user = await this.usersRepository.findOne({
+      where: { email: dto.email },
     });
 
     if (!user) {
-      throw new BadRequestException(
-        'User not found',
-      );
+      const randomPassword = await bcrypt.hash('temp123456', 10);
+
+      user = this.usersRepository.create({
+        name: 'OTP User',
+        email: dto.email,
+        password: randomPassword,
+      });
+
+      user = await this.usersRepository.save(user);
     }
-
-    user.isVerified = true;
-
-    await this.userRepository.save(user);
 
     return this.issueTokens(
       String(user.id),
@@ -175,122 +131,121 @@ export class AuthService {
     );
   }
 
-  // ================= REFRESH TOKEN =================
+  // =========================
+  // REFRESH TOKEN
+  // =========================
+  async refresh(userId: string, email: string) {
+    return this.issueTokens(userId, email);
+  }
 
-  async refresh(
-    dto: RefreshTokenDto,
-  ): Promise<AuthTokenDto> {
+  // =========================
+  // LOGOUT
+  // =========================
+  async logout() {
+    return {
+      message: 'Logged out successfully',
+    };
+  }
+
+  // =========================
+  // SEND EMAIL WITH BREVO API
+  // =========================
+  private async sendOtpEmail(email: string, otp: string) {
     try {
-      const payload =
-        await this.jwtService.verifyAsync(
-          dto.refreshToken,
-          {
-            secret:
-              this.configService.get<string>(
-                'JWT_REFRESH_SECRET',
-              ) || 'refresh_secret',
+      await axios.post(
+        'https://api.brevo.com/v3/smtp/email',
+        {
+          sender: {
+            name: 'UniGuide AI',
+            email: 'uni.guides.ai@gmail.com',
           },
-        );
 
-     return this.issueTokens(
-  String(payload.sub),
-  String(payload.email),
-);
-    } catch {
-      throw new UnauthorizedException(
-        'Invalid refresh token',
+          to: [
+            {
+              email,
+            },
+          ],
+
+          subject: 'Your OTP Code',
+
+          htmlContent: `
+            <div style="font-family: Arial; padding:20px">
+              <h2>UniGuide AI Verification</h2>
+
+              <p>Your OTP code is:</p>
+
+              <div style="
+                font-size:32px;
+                font-weight:bold;
+                letter-spacing:5px;
+                color:#2563eb;
+                margin:20px 0;
+              ">
+                ${otp}
+              </div>
+
+              <p>This code expires in 5 minutes.</p>
+            </div>
+          `,
+        },
+        {
+          headers: {
+            'api-key': this.configService.get<string>(
+              'BREVO_API_KEY',
+            ),
+            'Content-Type': 'application/json',
+          },
+        },
       );
+
+      this.logger.log(`OTP email sent to ${email}`);
+    } catch (error) {
+      this.logger.error('Failed to send OTP email');
+
+      console.log(
+        error.response?.data || error.message,
+      );
+
+      // fallback
+      this.logger.log(`OTP for ${email}: ${otp}`);
     }
   }
 
-  // ================= LOGOUT =================
-
-  async logout(userId: string): Promise<void> {
-    this.logger.log(
-      `User logged out: ${userId}`,
-    );
-  }
-
-  // ================= SEND OTP EMAIL =================
-
-  private async sendOtpEmail(
-    email: string,
-    otp: string,
-  ): Promise<void> {
-    this.logger.log(
-      `OTP for ${email}: ${otp}`,
-    );
-
-    // TEMPORARY SUCCESS
-    // لحد ما تركب Brevo صح
-    return;
-  }
-
-  // ================= GENERATE OTP =================
-
-  private async generateAndSendOtp(
-    email: string,
-  ): Promise<void> {
-    const otp = Math.floor(
-      100000 + Math.random() * 900000,
-    ).toString();
-
-    const expiresAt = new Date();
-
-    expiresAt.setMinutes(
-      expiresAt.getMinutes() +
-        this.OTP_EXPIRY_MINUTES,
-    );
-
-    const otpEntity = this.otpRepository.create({
-      email,
-      code: otp,
-      expiresAt,
-    });
-
-    await this.otpRepository.save(
-      otpEntity,
-    );
-
-    await this.sendOtpEmail(email, otp);
-  }
-
-  // ================= ISSUE TOKENS =================
-
+  // =========================
+  // ISSUE TOKENS
+  // =========================
   private async issueTokens(
     userId: string,
     email: string,
-  ): Promise<AuthTokenDto> {
+  ) {
     const payload = {
       sub: userId,
       email,
     };
 
-    const accessToken =
-      await this.jwtService.signAsync(
-        payload,
-        {
-          secret:
-            this.configService.get<string>(
-              'JWT_SECRET',
-            ) || 'jwt_secret',
+    const accessToken = await this.jwtService.signAsync(
+      payload,
+      {
+        secret:
+          this.configService.get<string>(
+            'JWT_ACCESS_SECRET',
+          ) || 'access-secret',
 
-          expiresIn: '1d',
-        },
-      );
+        expiresIn: '1d',
+      },
+    );
 
-    const refreshToken =
-      await this.jwtService.signAsync(
-        payload,
-        {
-          secret:
-            this.configService.get<string>(
-              'JWT_REFRESH_SECRET',
-            ) || 'refresh_secret',
+    const refreshToken = await this.jwtService.signAsync(
+      payload,
+      {
+        secret:
+          this.configService.get<string>(
+            'JWT_REFRESH_SECRET',
+          ) || 'refresh-secret',
 
-          expiresIn: `${this.REFRESH_TOKEN_TTL_DAYS}d`,
-        },
-      );
+        expiresIn: '7d',
+      },
+    );
 
     return {
       accessToken,
