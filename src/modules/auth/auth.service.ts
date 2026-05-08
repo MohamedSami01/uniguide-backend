@@ -2,6 +2,7 @@ import {
   Injectable,
   UnauthorizedException,
   BadRequestException,
+  Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -9,7 +10,7 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 
 import * as bcrypt from 'bcrypt';
-import * as nodemailer from 'nodemailer';
+import { Resend } from 'resend';
 
 import { User } from '../users/entities/user.entity';
 
@@ -20,6 +21,8 @@ import { VerifyOtpDto } from './dto/verify-otp.dto';
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     @InjectRepository(User)
     private readonly usersRepository: Repository<User>,
@@ -27,16 +30,6 @@ export class AuthService {
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
   ) {}
-
-  private transporter = nodemailer.createTransport({
-    host: process.env.EMAIL_HOST,
-    port: Number(process.env.EMAIL_PORT),
-    secure: process.env.EMAIL_SECURE === 'true',
-    auth: {
-      user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASS,
-    },
-  });
 
   async register(dto: RegisterDto) {
     const existingUser = await this.usersRepository.findOne({
@@ -72,10 +65,11 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
-   const isPasswordValid = await bcrypt.compare(
-  dto.password,
-  user.password as string,
-);
+    const isPasswordValid = await bcrypt.compare(
+      dto.password,
+      user.password as string,
+    );
+
     if (!isPasswordValid) {
       throw new UnauthorizedException('Invalid credentials');
     }
@@ -111,7 +105,7 @@ export class AuthService {
   async sendOtp(dto: SendOtpDto) {
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
-    console.log(`OTP for ${dto.email}: ${otp}`);
+    this.logger.log(`OTP for ${dto.email}: ${otp}`);
 
     await this.sendOtpEmail(dto.email, otp);
 
@@ -150,23 +144,27 @@ export class AuthService {
 
   async sendOtpEmail(email: string, otp: string) {
     try {
-      await this.transporter.sendMail({
-        from: process.env.EMAIL_FROM,
+      const resend = new Resend(
+        this.configService.get<string>('RESEND_API_KEY'),
+      );
+
+      await resend.emails.send({
+        from: 'UniGuide <onboarding@resend.dev>',
         to: email,
         subject: 'UniGuide OTP Verification',
         html: `
-          <div style="font-family: Arial, sans-serif;">
+          <div style="font-family: Arial, sans-serif; padding:20px;">
             <h2>UniGuide Verification Code</h2>
             <p>Your OTP code is:</p>
-            <h1>${otp}</h1>
+            <h1 style="color:#2563eb;">${otp}</h1>
             <p>This code will expire in 10 minutes.</p>
           </div>
         `,
       });
 
-      console.log(`OTP email sent to ${email}`);
+      this.logger.log(`OTP email sent to ${email}`);
     } catch (error) {
-      console.error('Failed to send OTP email', error);
+      this.logger.error('Failed to send OTP email', error);
     }
   }
 }
